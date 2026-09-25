@@ -5,10 +5,16 @@
       <textarea v-model="contractCode" class="code-editor" placeholder="// 粘贴 Solidity 合约代码..."></textarea>
       <div class="toolbar">
         <input v-model="filename" placeholder="文件名.sol" class="filename-input" />
-        <button @click="runAudit" class="btn-primary" :disabled="!contractCode">
+        <button @click="runAudit" class="btn-primary" :disabled="!contractCode.trim() || isAuditing">
           {{ isAuditing ? "审计中..." : "开始审计" }}
         </button>
+        <button
+          v-if="result"
+          class="btn-secondary"
+          @click="goGas"
+        >在 Gas 结果页查看</button>
       </div>
+      <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
     </div>
     <div v-if="result" class="result-section">
       <div class="score-card" :class="scoreClass">
@@ -18,22 +24,22 @@
       </div>
       <div class="vulnerabilities">
         <h3>发现漏洞 ({{ result.vulnerabilities.length }})</h3>
-        <div v-for="v in result.vulnerabilities" :key="v.line + v.type" class="vuln-card" :class="v.severity">
+        <div v-for="v in result.vulnerabilities" :key="v.id ?? (v.type + v.line)" class="vuln-card" :class="v.severity">
           <div class="vuln-header">
             <span class="vuln-type">{{ v.type }}</span>
-            <span class="vuln-severity">{{ v.severity }}</span>
+            <span class="vuln-severity">{{ v.severity }} · 第 {{ v.line }} 行</span>
           </div>
           <div class="vuln-desc">{{ v.description }}</div>
           <div class="vuln-suggest">建议: {{ v.suggestion }}</div>
         </div>
+        <div v-if="result.vulnerabilities.length === 0" class="no-vuln">未发现已知模式的漏洞。</div>
       </div>
-      <div v-if="result.gasIssues.length > 0" class="gas-section">
-        <h3>Gas优化建议</h3>
-        <div v-for="g in result.gasIssues" :key="g.functionName" class="gas-card">
-          <div class="gas-fn">{{ g.functionName }}</div>
-          <div class="gas-info">当前: {{ g.currentGas }} → 优化后: {{ g.optimizedGas }} ({{ Math.round((1-g.optimizedGas/g.currentGas)*100) }}%节省)</div>
-          <div class="gas-suggest">{{ g.suggestion }}</div>
-        </div>
+      <div class="gas-section">
+        <h3>
+          Gas 分析（{{ result.gasSummary.knownCount }}/{{ result.gasSummary.functionCount }} 个函数已估算，
+          {{ result.gasSummary.unknownCount }} 个未知）
+        </h3>
+        <GasIssueList :issues="result.gasIssues" :code-text="result.code" @fixed="onFixed" />
       </div>
     </div>
   </div>
@@ -41,17 +47,23 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue"
+import { useRouter } from "vue-router"
+import { useAuditStore } from "@/store"
+import GasIssueList from "@/components/GasIssueList.vue"
+
+const store = useAuditStore()
+const router = useRouter()
 
 const contractCode = ref(`// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 contract SimpleBank {
     mapping(address => uint) public balances;
-    
+
     function deposit() public payable {
         balances[msg.sender] += msg.value;
     }
-    
+
     function withdraw(uint amount) public {
         require(balances[msg.sender] >= amount);
         (bool success,) = msg.sender.call{value: amount}("");
@@ -61,7 +73,9 @@ contract SimpleBank {
 }`)
 const filename = ref("SimpleBank.sol")
 const isAuditing = ref(false)
-const result = ref<any>(null)
+const errorMsg = ref("")
+
+const result = computed(() => store.currentResult)
 
 const scoreClass = computed(() => {
   if (!result.value) return ""
@@ -80,38 +94,23 @@ const scoreGrade = computed(() => {
 
 async function runAudit() {
   isAuditing.value = true
-  await new Promise(r => setTimeout(r, 1500))
-  
-  // Simulate vulnerability detection
-  const vulns = []
-  if (contractCode.value.includes("msg.sender.call")) {
-    vulns.push({
-      type: "重入攻击 (Reentrancy)",
-      severity: "critical",
-      line: contractCode.value.split("\n").findIndex(l => l.includes("msg.sender.call")) + 1,
-      description: "使用了低级的 call() 接收ETH，存在重入攻击风险。攻击者可通过恶意合约反复调用提款函数。",
-      suggestion: "使用 Checks-Effects-Interactions 模式，或使用 ReentrancyGuard 修饰符。"
-    })
+  errorMsg.value = ""
+  try {
+    await store.uploadAndAudit(contractCode.value, filename.value.trim() || "untitled.sol")
+  } catch (e: any) {
+    errorMsg.value = e?.response?.data?.detail || "审计请求失败，请确认后端服务已启动。"
+  } finally {
+    isAuditing.value = false
   }
-  if (contractCode.value.includes("require(balances")) {
-    vulns.push({
-      type: "整数溢出 (Integer Overflow)",
-      severity: "high",
-      line: 1,
-      description: "Solidity 0.8以下版本未启用溢出检查，需注意。",
-      suggestion: "使用 SafeMath 库或在 Solidity 0.8+ 环境中编译。"
-    })
-  }
-  
-  result.value = {
-    score: vulns.length === 0 ? 95 : Math.max(20, 85 - vulns.length * 25),
-    vulnerabilities: vulns,
-    gasIssues: [
-      { functionName: "deposit()", currentGas: 45000, optimizedGas: 21000, suggestion: "移除不必要的存储写入" },
-      { functionName: "withdraw()", currentGas: 52000, optimizedGas: 31000, suggestion: "使用 local 变量缓存 balances[msg.sender]" }
-    ]
-  }
-  isAuditing.value = false
+}
+
+function goGas() {
+  router.push("/gas")
+}
+
+// 自动修复生效后，编辑器同步为修复后的代码，列表已是新审计结果
+function onFixed(fixedCode: string) {
+  contractCode.value = fixedCode
 }
 </script>
 
@@ -122,6 +121,8 @@ async function runAudit() {
 .filename-input { padding: 0.5rem 1rem; border: 1px solid #d1d5db; border-radius: 8px; flex: 1; }
 .btn-primary { background: #8b5cf6; color: white; border: none; padding: 0.625rem 1.5rem; border-radius: 8px; cursor: pointer; white-space: nowrap; }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary { background: #ede9fe; color: #6d28d9; border: none; padding: 0.625rem 1.25rem; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.error-msg { color: #dc2626; font-size: 0.875rem; }
 .result-section { margin-top: 2rem; }
 .score-card { border-radius: 16px; padding: 2rem; text-align: center; color: white; margin-bottom: 2rem; }
 .score-high { background: linear-gradient(135deg, #10b981, #059669); }
@@ -138,11 +139,9 @@ async function runAudit() {
 .vuln-card.low { border-color: #6b7280; }
 .vuln-header { display: flex; justify-content: space-between; margin-bottom: 0.75rem; }
 .vuln-type { font-weight: 600; }
-.vuln-severity { padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; background: #fee2e2; color: #dc2626; }
+.vuln-severity { font-size: 0.75rem; color: #6b7280; }
 .vuln-desc { color: #374151; margin-bottom: 0.5rem; }
 .vuln-suggest { font-size: 0.875rem; color: #6b7280; }
-.gas-card { background: white; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
-.gas-fn { font-weight: 600; color: #7c3aed; margin-bottom: 0.5rem; }
-.gas-info { color: #059669; font-size: 0.875rem; margin-bottom: 0.5rem; }
-.gas-suggest { font-size: 0.875rem; color: #6b7280; }
+.no-vuln { color: #059669; font-size: 0.875rem; }
+.gas-section { margin-top: 2rem; }
 </style>

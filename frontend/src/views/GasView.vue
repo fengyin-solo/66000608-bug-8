@@ -1,9 +1,21 @@
 <template>
   <div class="gas">
     <h2>Gas 消耗分析</h2>
-    <div ref="gasChart" class="chart-container"></div>
+    <div v-if="store.currentResult" class="result-meta">
+      <span class="filename">{{ store.currentResult.filename }}</span>
+      <span class="tip">图表与列表使用同一份分析数据</span>
+    </div>
+
+    <template v-if="store.currentResult">
+      <GasPanel :result="store.currentResult" />
+    </template>
+    <div v-else class="no-data">
+      <p>还没有分析结果。请先在“合约审计”页提交一份 Solidity 合约。</p>
+      <router-link to="/" class="go-btn">去分析合约</router-link>
+    </div>
+
     <div class="gas-tips">
-      <h3>Gas优化技巧</h3>
+      <h3>Gas 优化技巧</h3>
       <ul>
         <li>使用 <code>calldata</code> 代替 <code>memory</code> 存储函数参数</li>
         <li>使用 <code>short-circuit</code> 逻辑减少不必要的计算</li>
@@ -16,32 +28,34 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue"
-import * as echarts from "echarts"
+import { onMounted } from 'vue'
+import { useAuditStore } from '@/store'
+import GasPanel from '@/components/GasPanel.vue'
 
-const gasChart = ref<HTMLElement | null>(null)
-let chart: echarts.ECharts | null = null
+const store = useAuditStore()
 
+// 页面刷新后 pinia 从 localStorage 恢复；能连到后端时再同步一次
 onMounted(() => {
-  if (gasChart.value) {
-    chart = echarts.init(gasChart.value)
-    chart.setOption({
-      title: { text: "各函数Gas消耗对比", left: "center" },
-      tooltip: {},
-      xAxis: { type: "category", data: ["deposit", "withdraw", "transfer", "balanceOf", "totalSupply"] },
-      yAxis: { type: "value", name: "Gas" },
-      series: [{ type: "bar", data: [45000, 52000, 35000, 28000, 22000], itemStyle: { color: "#8b5cf6" } }]
-    })
+  if (store.results.length === 0) {
+    store.fetchHistory()
   }
 })
-
-onUnmounted(() => { chart?.dispose() })
 </script>
 
 <style scoped>
 .gas { max-width: 1000px; }
-.chart-container { height: 400px; background: white; border-radius: 12px; padding: 1rem; margin-bottom: 2rem; }
-.gas-tips { background: white; border-radius: 12px; padding: 1.5rem; }
+.result-meta { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1rem; }
+.filename { font-weight: 600; color: #374151; }
+.tip { font-size: 0.75rem; color: #9ca3af; }
+.no-data {
+  background: white; border-radius: 12px; padding: 3rem; text-align: center;
+  color: #6b7280; margin-bottom: 2rem;
+}
+.go-btn {
+  display: inline-block; margin-top: 1rem; background: #8b5cf6; color: white;
+  padding: 0.5rem 1.25rem; border-radius: 8px; text-decoration: none;
+}
+.gas-tips { background: white; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; }
 .gas-tips h3 { margin-bottom: 1rem; }
 .gas-tips ul { list-style: none; }
 .gas-tips li { padding: 0.5rem 0; color: #374151; border-bottom: 1px solid #f3f4f6; }
